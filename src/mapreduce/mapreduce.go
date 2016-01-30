@@ -104,6 +104,7 @@ func (mr *MapReduce) Shutdown(args *ShutdownArgs, res *ShutdownReply) error {
 }
 
 func (mr *MapReduce) StartRegistrationServer() {
+	// 等价于直接调用rpc.Register, 因为rpc.Register会为我们new一个Server
 	rpcs := rpc.NewServer()
 	rpcs.Register(mr)
 	os.Remove(mr.MasterAddress) // only needed for "unix"
