@@ -1,7 +1,10 @@
 package mapreduce
 
 import "container/list"
-import "fmt"
+import (
+	"fmt"
+	"sync/atomic"
+)
 
 
 type WorkerInfo struct {
@@ -29,41 +32,101 @@ func (mr *MapReduce) KillWorkers() *list.List {
 }
 
 func (mr *MapReduce) RunMaster() *list.List {
-	// Your code here
-  worker := <- mr.registerChannel
-	mapDone := make(chan bool, mr.nMap)
+	idleWorkers := make(chan *WorkerInfo)
 
-	for i := 0; i < mr.nMap; i++ {
-		args := &DoJobArgs{mr.file, Map, i, mr.nReduce}
-		var reply DoJobReply
+	// handle map jobs
+	mapJobs := make(chan int)
+	mapDone := make(chan bool)
+	var mapCnt int32 = 0
 
-		go func () {
-			mapDone <- call(worker, "Worker.DoJob", args, &reply)
-		}()
-	}
+	go func () {
+    for i := range mapJobs {
+			if (mr.IdleWorkers.Len() == 0) {
+				select {
+				case worker := <- idleWorkers:
+					mr.IdleWorkers.PushBack(worker)
+				case workerAddress := <- mr.registerChannel:
+					worker := &WorkerInfo{workerAddress}
+					mr.Workers[workerAddress] = worker
+					mr.IdleWorkers.PushBack(worker)
+				}
+			}
 
-	for i := 0; i < mr.nMap; i++ {
-    if <- mapDone == false {
-      fmt.Println("DoJob: RPC %s call error\n", worker)
+      args := &DoJobArgs{mr.file, Map, i, mr.nReduce}
+      var reply DoJobReply
+      frontElement := mr.IdleWorkers.Front()
+      worker := mr.IdleWorkers.Remove(frontElement).(*WorkerInfo)
+
+      go func () {
+        success := call(worker.address, "Worker.DoJob", args, &reply)
+
+				if (success) {
+					atomic.AddInt32(&mapCnt, 1)
+					if (atomic.LoadInt32(&mapCnt) == int32(mr.nMap)) {
+						mapDone <- true
+					}
+
+					idleWorkers <- worker
+				} else {
+					mapJobs <- i
+				}
+      }()
     }
-  }
+  }()
 
-	reduceDone := make(chan bool, mr.nReduce)
-
-	for i := 0; i < mr.nReduce; i++ {
-		args := &DoJobArgs{mr.file, Reduce, i, mr.nMap}
-		var reply DoJobReply
-
-		go func () {
-			reduceDone <- call(worker, "Worker.DoJob", args, &reply)
-		}()
+	for i := 0; i < mr.nMap; i++ {
+		mapJobs <- i
 	}
 
-	for i := 0; i < mr.nReduce; i++ {
-		if <- reduceDone == false {
-			fmt.Println("DoJob: RPC %s call error\n", worker)
+	<- mapDone
+	close(mapJobs)
+
+	// handle reduce jobs
+	reduceJobs := make(chan int)
+	reduceDone := make(chan bool)
+	var reduceCnt int32 = 0
+
+	go func () {
+		for i := range reduceJobs {
+			if (mr.IdleWorkers.Len() == 0) {
+				select {
+				case worker := <- idleWorkers:
+					mr.IdleWorkers.PushBack(worker)
+				case workerAddress := <- mr.registerChannel:
+					worker := &WorkerInfo{workerAddress}
+					mr.Workers[workerAddress] = worker
+					mr.IdleWorkers.PushBack(worker)
+				}
+			}
+
+			args := &DoJobArgs{mr.file, Reduce, i, mr.nMap}
+			var reply DoJobReply
+			frontElement := mr.IdleWorkers.Front()
+			worker := mr.IdleWorkers.Remove(frontElement).(*WorkerInfo)
+
+			go func () {
+				success := call(worker.address, "Worker.DoJob", args, &reply)
+
+				if (success) {
+					atomic.AddInt32(&reduceCnt, 1)
+					if (atomic.LoadInt32(&reduceCnt) == int32(mr.nReduce)) {
+						reduceDone <- true
+					}
+
+					idleWorkers <- worker
+				} else {
+					reduceJobs <- i
+				}
+			}()
 		}
+	}()
+
+	for i := 0; i < mr.nReduce; i++ {
+		reduceJobs <- i
 	}
+
+	<- reduceDone
+	close(reduceJobs)
 
 	return mr.KillWorkers()
 }
