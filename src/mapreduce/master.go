@@ -31,27 +31,32 @@ func (mr *MapReduce) KillWorkers() *list.List {
 func (mr *MapReduce) RunMaster() *list.List {
 	// Your code here
 	mapDone := make(chan int)
-  idle := make(chan string, 100)
+  idle := make(chan string)
 
   for i := 0; i < mr.nMap; i++ {
     taskId := i
     go func() {
       // retry the task until it succeeds
       for {
+        var worker string
+        var success bool
         select {
-        case worker := <- idle:
+        case worker = <- mr.registerChannel:
+          fmt.Println(worker, "registered")
+          args := &DoJobArgs{mr.file, Map, taskId, mr.nReduce}
+          var reply DoJobReply
+          success = call(worker, "Worker.DoJob", args, &reply)
+        case worker = <- idle:
           fmt.Println(taskId, "started on", worker)
           args := &DoJobArgs{mr.file, Map, taskId, mr.nReduce}
           var reply DoJobReply
-          success := call(worker, "Worker.DoJob", args, &reply)
+          success = call(worker, "Worker.DoJob", args, &reply)
+        }
+
+        if success {
+          mapDone <- taskId
           idle <- worker
-          if success {
-            mapDone <- taskId
-            return
-          }
-        case worker := <- mr.registerChannel:
-          fmt.Println(worker, "registered")
-          idle <- worker
+          return
         }
       }
     }()
@@ -68,20 +73,25 @@ func (mr *MapReduce) RunMaster() *list.List {
     go func() {
       // retry the task until it succeeds
       for {
+        var worker string
+        var success bool
         select {
-        case worker := <- idle:
+        case worker = <- mr.registerChannel:
+          fmt.Println(worker, "registered")
+          args := &DoJobArgs{mr.file, Reduce, taskId, mr.nMap}
+          var reply DoJobReply
+          success = call(worker, "Worker.DoJob", args, &reply)
+        case worker = <- idle:
           fmt.Println(taskId, "started on", worker)
           args := &DoJobArgs{mr.file, Reduce, taskId, mr.nMap}
           var reply DoJobReply
-          success := call(worker, "Worker.DoJob", args, &reply)
+          success = call(worker, "Worker.DoJob", args, &reply)
+        }
+
+        if success {
+          reduceDone <- taskId
           idle <- worker
-          if success {
-            reduceDone <- taskId
-            return
-          }
-        case worker := <- mr.registerChannel:
-          fmt.Println(worker, "registered")
-          idle <- worker
+          return
         }
       }
     }()
