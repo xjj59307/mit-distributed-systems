@@ -30,40 +30,66 @@ func (mr *MapReduce) KillWorkers() *list.List {
 
 func (mr *MapReduce) RunMaster() *list.List {
 	// Your code here
-  worker := <- mr.registerChannel
-	mapDone := make(chan bool, mr.nMap)
+	mapDone := make(chan int)
+  idle := make(chan string, 100)
 
-	for i := 0; i < mr.nMap; i++ {
-		args := &DoJobArgs{mr.file, Map, i, mr.nReduce}
-		var reply DoJobReply
-
-		go func () {
-			mapDone <- call(worker, "Worker.DoJob", args, &reply)
-		}()
-	}
-
-	for i := 0; i < mr.nMap; i++ {
-    if <- mapDone == false {
-      fmt.Println("DoJob: RPC %s call error\n", worker)
-    }
+  for i := 0; i < mr.nMap; i++ {
+    taskId := i
+    go func() {
+      // retry the task until it succeeds
+      for {
+        select {
+        case worker := <- idle:
+          fmt.Println(taskId, "started on", worker)
+          args := &DoJobArgs{mr.file, Map, taskId, mr.nReduce}
+          var reply DoJobReply
+          success := call(worker, "Worker.DoJob", args, &reply)
+          idle <- worker
+          if success {
+            mapDone <- taskId
+            return
+          }
+        case worker := <- mr.registerChannel:
+          fmt.Println(worker, "registered")
+          idle <- worker
+        }
+      }
+    }()
   }
 
-	reduceDone := make(chan bool, mr.nReduce)
+	for i := 0; i < mr.nMap; i++ {
+    fmt.Println(<- mapDone, "map succeeded")
+  }
 
-	for i := 0; i < mr.nReduce; i++ {
-		args := &DoJobArgs{mr.file, Reduce, i, mr.nMap}
-		var reply DoJobReply
+	reduceDone := make(chan int)
 
-		go func () {
-			reduceDone <- call(worker, "Worker.DoJob", args, &reply)
-		}()
-	}
+  for i := 0; i < mr.nReduce; i++ {
+    taskId := i
+    go func() {
+      // retry the task until it succeeds
+      for {
+        select {
+        case worker := <- idle:
+          fmt.Println(taskId, "started on", worker)
+          args := &DoJobArgs{mr.file, Reduce, taskId, mr.nMap}
+          var reply DoJobReply
+          success := call(worker, "Worker.DoJob", args, &reply)
+          idle <- worker
+          if success {
+            reduceDone <- taskId
+            return
+          }
+        case worker := <- mr.registerChannel:
+          fmt.Println(worker, "registered")
+          idle <- worker
+        }
+      }
+    }()
+  }
 
-	for i := 0; i < mr.nReduce; i++ {
-		if <- reduceDone == false {
-			fmt.Println("DoJob: RPC %s call error\n", worker)
-		}
-	}
+  for i := 0; i < mr.nReduce; i++ {
+    fmt.Println(<- reduceDone, "reduce succeeded")
+  }
 
 	return mr.KillWorkers()
 }
