@@ -5,12 +5,17 @@ import "net/rpc"
 import "fmt"
 
 import "crypto/rand"
-import "math/big"
+import (
+	"math/big"
+	"log"
+	"time"
+)
 
 
 type Clerk struct {
 	vs *viewservice.Clerk
 	// Your declarations here
+	view viewservice.View
 }
 
 // this may come in handy.
@@ -25,6 +30,11 @@ func MakeClerk(vshost string, me string) *Clerk {
 	ck := new(Clerk)
 	ck.vs = viewservice.MakeClerk(me, vshost)
 	// Your ck.* initializations here
+	var success bool
+	ck.view, success = ck.vs.Get()
+	if !success {
+		//log.Println("ck.vs.Get failed")
+	}
 
 	return ck
 }
@@ -64,6 +74,22 @@ func call(srv string, rpcname string,
 	return false
 }
 
+func (ck *Clerk) retry(fn func() (bool, Err)) {
+	for {
+		ok, err := fn()
+		if ok && err == OK {
+			break
+		} else {
+			var ok bool
+			ck.view, ok = ck.vs.Get()
+			if !ok {
+				//log.Println("ck.vs.Get failed")
+			}
+			time.Sleep(viewservice.PingInterval)
+		}
+	}
+}
+
 //
 // fetch a key's value from the current primary;
 // if they key has never been set, return "".
@@ -74,8 +100,16 @@ func call(srv string, rpcname string,
 func (ck *Clerk) Get(key string) string {
 
 	// Your code here.
+	//log.Println("Get", key)
 
-	return "???"
+	args := &GetArgs{Key: key}
+	var reply GetReply
+
+  ck.retry(func() (bool, Err) {
+    return call(ck.view.Primary, "PBServer.Get", args, &reply), reply.Err
+  })
+
+	return reply.Value
 }
 
 //
@@ -84,6 +118,13 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 	// Your code here.
+	args := &PutAppendArgs{Key: key, Value: value, Op: op, Id: nrand()}
+	var reply PutAppendReply
+
+	ck.retry(func() (bool, Err) {
+		log.Println(key, value)
+		return call(ck.view.Primary, "PBServer.PutAppend", args, &reply), reply.Err
+	})
 }
 
 //
@@ -91,6 +132,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 // must keep trying until it succeeds.
 //
 func (ck *Clerk) Put(key string, value string) {
+	//log.Println("Put", key, value)
+
 	ck.PutAppend(key, value, "Put")
 }
 
@@ -99,5 +142,7 @@ func (ck *Clerk) Put(key string, value string) {
 // must keep trying until it succeeds.
 //
 func (ck *Clerk) Append(key string, value string) {
+	//log.Println("Append", key, value)
+
 	ck.PutAppend(key, value, "Append")
 }

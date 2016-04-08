@@ -39,6 +39,7 @@ func TestBasicFail(t *testing.T) {
 	tag := "basic"
 	vshost := port(tag+"v", 1)
 	vs := viewservice.StartServer(vshost)
+  log.Println(vshost)
 	time.Sleep(time.Second)
 	vck := viewservice.MakeClerk("", vshost)
 
@@ -76,6 +77,7 @@ func TestBasicFail(t *testing.T) {
 	fmt.Printf("Test: Add a backup ...\n")
 
 	s2 := StartServer(vshost, port(tag, 2))
+  log.Println(vshost, port(tag, 2))
 	for i := 0; i < viewservice.DeadPings*2; i++ {
 		v, _ := vck.Get()
 		if v.Backup == s2.me {
@@ -152,6 +154,7 @@ func TestBasicFail(t *testing.T) {
 
 	s2.kill()
 	s3 := StartServer(vshost, port(tag, 3))
+  log.Println(vshost, port(tag, 3))
 	time.Sleep(1 * time.Second)
 	get_done := make(chan bool)
 	go func() {
@@ -274,6 +277,7 @@ func TestFailPut(t *testing.T) {
 
 	for i := 0; i < viewservice.DeadPings*3; i++ {
 		v, _ := vck.Get()
+    log.Println(v.Primary, v.Backup)
 		if v.Viewnum > v1.Viewnum && v.Primary != "" && v.Backup != "" {
 			break
 		}
@@ -424,14 +428,14 @@ func checkAppends(t *testing.T, v string, counts []int) {
 			wanted := "x " + strconv.Itoa(i) + " " + strconv.Itoa(j) + " y"
 			off := strings.Index(v, wanted)
 			if off < 0 {
-				t.Fatalf("missing element in Append result")
+				t.Fatalf("missing element in Append result", wanted, v)
 			}
 			off1 := strings.LastIndex(v, wanted)
 			if off1 != off {
-				t.Fatalf("duplicate element in Append result")
+				t.Fatalf("duplicate element in Append result", wanted, v)
 			}
 			if off <= lastoff {
-				t.Fatalf("wrong order for element in Append result")
+				t.Fatalf("wrong order for element in Append result", wanted, v)
 			}
 			lastoff = off
 		}
@@ -568,6 +572,7 @@ func TestConcurrentSameUnreliable(t *testing.T) {
 
 	for iters := 0; iters < viewservice.DeadPings*2; iters++ {
 		view, _ := vck.Get()
+    log.Println("primary", view.Primary, "backup", view.Backup)
 		if view.Primary != "" && view.Backup != "" {
 			break
 		}
@@ -699,7 +704,7 @@ func TestRepeatedCrash(t *testing.T) {
 		rr := rand.New(rand.NewSource(int64(os.Getpid())))
 		for atomic.LoadInt32(&done) == 0 {
 			i := rr.Int() % nservers
-			// fmt.Printf("%v killing %v\n", ts(), 5001+i)
+      log.Println(i, "killed")
 			sa[i].kill()
 
 			// wait long enough for new view to form, backup to be initialized
@@ -729,13 +734,17 @@ func TestRepeatedCrash(t *testing.T) {
 				k := strconv.Itoa((i * 1000000) + (rr.Int() % 10))
 				wanted, ok := data[k]
 				if ok {
+          log.Println("get start", k)
 					v := ck.Get(k)
+          log.Println("get over", k)
 					if v != wanted {
 						t.Fatalf("key=%v wanted=%v got=%v", k, wanted, v)
 					}
 				}
 				nv := strconv.Itoa(rr.Int())
+        log.Println("put start", k, nv)
 				ck.Put(k, nv)
+        log.Println("put end", k, nv)
 				data[k] = nv
 				// if no sleep here, then server tick() threads do not get
 				// enough time to Ping the viewserver.
@@ -751,6 +760,7 @@ func TestRepeatedCrash(t *testing.T) {
 	fmt.Printf("  ... Put/Gets done ... \n")
 
 	for i := 0; i < nth; i++ {
+    log.Println(i, "finished")
 		ok := <-cha[i]
 		if ok == false {
 			t.Fatal("child failed")
