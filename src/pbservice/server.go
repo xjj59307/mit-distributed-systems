@@ -27,9 +27,15 @@ type PBServer struct {
 	// Your declarations here.
 	view       viewservice.View
 	db         map[string]string
-	ready      bool
 	handled    map[int64]bool
 }
+
+type MigrateArgs struct {
+  Db      map[string]string
+  Handled map[int64]bool
+}
+
+type MigrateReply struct { }
 
 func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 	pb.mu.Lock()
@@ -45,15 +51,9 @@ func (pb *PBServer) Forward(args *PutAppendArgs, reply *PutAppendReply) error {
 	pb.mu.Lock()
   defer pb.mu.Unlock()
 
-	logger.Debug(pb.me, "Start handling forwarded request")
-
-	if pb.me != pb.view.Backup || !pb.ready {
-		logger.Debug(pb.me, "Forwarding request being sent to a non-backup node")
-
+	if pb.me != pb.view.Backup {
 		reply.Err = ErrWrongServer
 	} else {
-		logger.Debug(pb.me, "Start updating the database")
-
 		if args.Op == "Put" {
 			pb.db[args.Key] = args.Value
 			pb.handled[args.Id] = true
@@ -63,7 +63,7 @@ func (pb *PBServer) Forward(args *PutAppendArgs, reply *PutAppendReply) error {
 			pb.handled[args.Id] = true
 			reply.Err = OK
 		} else {
-			logger.Error("Unknow operation ", args.Op)
+			logger.Error("unknow operation ", args.Op)
 		}
 	}
 
@@ -75,29 +75,23 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 	defer pb.mu.Unlock()
 
 	if pb.handled[args.Id] {
-		logger.Debug(pb.me, "Request already been handled")
 		reply.Err = OK
 		return nil
 	}
 
 	if pb.me != pb.view.Primary {
-		logger.Debug(pb.me, "PutAppend being sent to a non-primary node")
 		reply.Err = ErrWrongServer
 		return nil
 	}
 
 	// Primary will only make changes after backup being updated
 	if pb.view.Backup != "" {
-		logger.Debug(pb.me, "Start forwarding PutAppend to the backup node", pb.view.Backup)
-
     ok := call(pb.view.Backup, "PBServer.Forward", args, reply)
 		if !ok || reply.Err != OK {
-			logger.Debug(pb.me, "Failed in forwarding the request", pb.view.Backup)
 			return nil
 		}
 	}
 
-	logger.Debug(pb.me, "Start updating the database")
 	if args.Op == "Put" {
 		pb.db[args.Key] = args.Value
 		pb.handled[args.Id] = true
@@ -107,49 +101,20 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 		pb.handled[args.Id] = true
 		reply.Err = OK
 	} else {
-		logger.Error("Unknow operation ", args.Op)
+		logger.Error("unknow operation ", args.Op)
 	}
 
 	return nil
 }
 
-func (pb *PBServer) MigrateDB(args bool, reply *map[string]string) error {
+func (pb *PBServer) Migrate(args *MigrateArgs, reply *MigrateReply) error {
 	pb.mu.Lock()
   defer pb.mu.Unlock()
 
-	logger.Debug(pb.me, "Start handling migration request")
-	*reply = pb.db
-
-	// Update the view
-	view, err := pb.vs.Ping(pb.view.Viewnum)
-	if err != nil {
-		logger.Error(err)
-	}
-
-	pb.view = view
+	pb.db = args.Db
+  pb.handled = args.Handled
 
 	return nil
-}
-
-func (pb *PBServer) MigrateHandled(args bool, reply *map[int64]bool) error {
-	pb.mu.Lock()
-  defer pb.mu.Unlock()
-
-	logger.Debug(pb.me, "Start handling migration request")
-	*reply = pb.handled
-
-	return nil
-}
-
-func retry(fn func() bool) {
-	for {
-		ok := fn()
-		if ok {
-			break
-		} else {
-			time.Sleep(viewservice.PingInterval)
-		}
-	}
 }
 
 //
@@ -168,25 +133,18 @@ func (pb *PBServer) tick() {
 	} else {
 		viewnum = 0
 	}
+
 	view, err := pb.vs.Ping(viewnum)
 	if err != nil {
-		logger.Error(err)
+		logger.Debug(err)
 	}
 
-	logger.Debug(pb.me, "tick", view.Primary, view.Backup)
+	// migrate the data if new backup appears
+	if view.Backup != "" && pb.view.Backup != view.Backup && pb.me == view.Primary {
+    args := MigrateArgs{Db: pb.db, Handled: pb.handled}
+    reply := MigrateReply{}
 
-	// pb who isn't the backup in last view has become the backup in current view
-	if pb.me != pb.view.Backup && pb.me == view.Backup {
-		logger.Debug(pb.me, "Start migration", view.Primary, view.Backup, pb.me)
-		retry(func () bool {
-			return call(view.Primary, "PBServer.MigrateDB", true, &pb.db)
-		})
-		retry(func() bool {
-			return call(view.Primary, "PBServer.MigrateHandled", true, &pb.handled)
-		})
-    pb.ready = true
-
-		logger.Debug(pb.me, "Migration finished", pb.db, pb.handled)
+    call(view.Backup, "PBServer.Migrate", &args, &reply)
 	}
 
 	pb.view = view
@@ -226,10 +184,10 @@ func StartServer(vshost string, me string) *PBServer {
 	pb := new(PBServer)
 	pb.me = me
 	pb.vs = viewservice.MakeClerk(me, vshost)
+
 	// Your pb.* initializations here.
 	pb.db = make(map[string]string)
 	pb.handled = make(map[int64]bool)
-	pb.ready = false
 
 	rpcs := rpc.NewServer()
 	rpcs.Register(pb)
@@ -237,7 +195,7 @@ func StartServer(vshost string, me string) *PBServer {
 	os.Remove(pb.me)
 	l, e := net.Listen("unix", pb.me)
 	if e != nil {
-		logger.Error("listen error: ", e)
+		logger.Debug("listen error: ", e)
 	}
 	pb.l = l
 

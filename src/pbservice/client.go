@@ -12,6 +12,7 @@ import (
 
 type Clerk struct {
 	vs *viewservice.Clerk
+
 	// Your declarations here
 	view viewservice.View
 }
@@ -27,11 +28,12 @@ func nrand() int64 {
 func MakeClerk(vshost string, me string) *Clerk {
 	ck := new(Clerk)
 	ck.vs = viewservice.MakeClerk(me, vshost)
+
 	// Your ck.* initializations here
 	var success bool
 	ck.view, success = ck.vs.Get()
 	if !success {
-		//log.Println("ck.vs.Get failed")
+		logger.Debug("ck.vs.Get failed")
 	}
 
 	return ck
@@ -81,7 +83,7 @@ func (ck *Clerk) retry(fn func() (bool, Err)) {
 			var ok bool
 			ck.view, ok = ck.vs.Get()
 			if !ok {
-				//log.Println("ck.vs.Get failed")
+				logger.Debug("ck.vs.Get failed")
 			}
 			time.Sleep(viewservice.PingInterval)
 		}
@@ -96,10 +98,6 @@ func (ck *Clerk) retry(fn func() (bool, Err)) {
 // says the key doesn't exist (has never been Put().
 //
 func (ck *Clerk) Get(key string) string {
-
-	// Your code here.
-	//log.Println("Get", key)
-
 	args := &GetArgs{Key: key}
 	var reply GetReply
 
@@ -114,13 +112,10 @@ func (ck *Clerk) Get(key string) string {
 // send a Put or Append RPC
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-
-	// Your code here.
 	args := &PutAppendArgs{Key: key, Value: value, Op: op, Id: nrand()}
 	var reply PutAppendReply
 
 	ck.retry(func() (bool, Err) {
-		logger.Debug(key, value)
 		return call(ck.view.Primary, "PBServer.PutAppend", args, &reply), reply.Err
 	})
 }
@@ -130,8 +125,6 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 // must keep trying until it succeeds.
 //
 func (ck *Clerk) Put(key string, value string) {
-	//log.Println("Put", key, value)
-
 	ck.PutAppend(key, value, "Put")
 }
 
@@ -140,7 +133,5 @@ func (ck *Clerk) Put(key string, value string) {
 // must keep trying until it succeeds.
 //
 func (ck *Clerk) Append(key string, value string) {
-	//log.Println("Append", key, value)
-
 	ck.PutAppend(key, value, "Append")
 }
