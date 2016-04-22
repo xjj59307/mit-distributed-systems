@@ -76,21 +76,27 @@ func (pb *PBServer) FPutAppend(args *PutAppendArgs, reply *PutAppendReply) error
 	pb.mu.Lock()
   defer pb.mu.Unlock()
 
+  if pb.handled[args.Id] {
+    reply.Err = OK
+    return nil
+  }
+
 	if pb.me != pb.view.Backup {
-		reply.Err = ErrWrongServer
-	} else {
-		if args.Op == "Put" {
-			pb.db[args.Key] = args.Value
-			pb.handled[args.Id] = true
-			reply.Err = OK
-		} else if args.Op == "Append" {
-			pb.db[args.Key] = pb.db[args.Key] + args.Value
-			pb.handled[args.Id] = true
-			reply.Err = OK
-		} else {
-			logger.Error("unknow operation ", args.Op)
-		}
-	}
+    reply.Err = ErrWrongServer
+    return nil
+  }
+
+  if args.Op == "Put" {
+    pb.db[args.Key] = args.Value
+    pb.handled[args.Id] = true
+    reply.Err = OK
+  } else if args.Op == "Append" {
+    pb.db[args.Key] = pb.db[args.Key] + args.Value
+    pb.handled[args.Id] = true
+    reply.Err = OK
+  } else {
+    logger.Error("unknow operation ", args.Op)
+  }
 
 	return nil
 }
@@ -169,7 +175,9 @@ func (pb *PBServer) tick() {
     args := MigrateArgs{Db: pb.db, Handled: pb.handled}
     reply := MigrateReply{}
 
-    call(view.Backup, "PBServer.Migrate", &args, &reply)
+    if !call(view.Backup, "PBServer.Migrate", &args, &reply) {
+      return
+    }
 	}
 
 	pb.view = view
