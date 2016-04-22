@@ -22,15 +22,19 @@ package paxos
 
 import "net"
 import "net/rpc"
-import "log"
 
 import "os"
 import "syscall"
 import "sync"
 import "sync/atomic"
 import "fmt"
-import "math/rand"
+import (
+  "math/rand"
+  "time"
+  "github.com/op/go-logging"
+)
 
+var log = logging.MustGetLogger("paxos")
 
 // px.Status() return values, indicating
 // whether an agreement has been decided,
@@ -39,9 +43,16 @@ import "math/rand"
 type Fate int
 
 const (
-	Decided   Fate = iota + 1
-	Pending        // not yet decided.
-	Forgotten      // decided but forgotten.
+	Decided Fate = iota + 1
+	Pending
+	Forgotten // decided but forgotten.
+)
+
+type Result int
+
+const (
+  Ok Result = iota + 1
+  Fail
 )
 
 type Paxos struct {
@@ -53,9 +64,46 @@ type Paxos struct {
 	peers      []string
 	me         int // index into peers[]
 
-
 	// Your data here.
+	instances  map[int]*PaxosInstance
 }
+
+type Proposal struct {
+  Num   string
+  Value interface{}
+}
+
+type PaxosInstance struct {
+  decided Fate
+  maxNum string
+  accepted Proposal
+}
+
+type PrepareArgs struct {
+  Seq int    // instance number
+  Num string // proposal number
+}
+
+type PrepareReply struct {
+  Result   Result
+  Accepted Proposal
+}
+
+type AcceptArgs struct {
+  Seq      int
+  Proposal Proposal
+}
+
+type AcceptReply struct {
+  Result Result
+}
+
+type DecideArgs struct {
+  Seq      int
+  Proposal Proposal
+}
+
+type DecideReply struct { }
 
 //
 // call() sends an RPC to the rpcname handler on server srv
@@ -78,7 +126,7 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 	if err != nil {
 		err1 := err.(*net.OpError)
 		if err1.Err != syscall.ENOENT && err1.Err != syscall.ECONNREFUSED {
-			fmt.Printf("paxos Dial() failed: %v\n", err1)
+			log.Debug("paxos Dial() failed: %v\n", err1)
 		}
 		return false
 	}
@@ -103,6 +151,155 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 //
 func (px *Paxos) Start(seq int, v interface{}) {
 	// Your code here.
+  go func() {
+    px.propose(seq, v)
+  }()
+}
+
+func (px *Paxos) propose(seq int, v interface{}) {
+  num := time.Now().Format(time.ANSIC) + px.peers[px.me]
+
+  for {
+    preparedOk := 0
+    maxAccepted := Proposal{Num: "0"}
+
+    // send prepare requests to all acceptors
+    for i, peer := range px.peers {
+      args := PrepareArgs{Seq: seq, Num: num}
+      reply := PrepareReply{Result: Fail}
+
+      if i == px.me {
+        log.Debug(px.peers[px.me], "send prepare to", peer, args)
+
+        px.ProcessPrepare(&args, &reply)
+      } else {
+        log.Debug(px.peers[px.me], "send prepare to", peer, args)
+
+        call(peer, "Paxos.ProcessPrepare", &args, &reply)
+      }
+
+      if reply.Result == Ok {
+        if reply.Accepted.Num > maxAccepted.Num {
+          maxAccepted = reply.Accepted
+        }
+        preparedOk++
+
+        log.Notice(peer, "prepare ok")
+      }
+    }
+
+    // if prepared number doesn't suffice
+    if preparedOk <= len(px.peers) / 2 {
+      continue
+    }
+
+    acceptedOk := 0
+
+    // send accept requests to all acceptors
+    for i, peer := range px.peers {
+      args := AcceptArgs{Seq: seq, Proposal: Proposal{Num: num, Value: maxAccepted.Value}}
+      reply := AcceptReply{Result: Fail}
+
+      if i == px.me {
+        px.ProcessAccept(&args, &reply)
+      } else {
+        call(peer, "Paxos.ProcessAccept", &args, &reply)
+      }
+
+      if reply.Result == Ok {
+        acceptedOk++
+      }
+    }
+
+    // if accepted number doesn't suffice
+    if acceptedOk <= len(px.peers) / 2 {
+      continue
+    }
+
+    for i, peer := range px.peers {
+      if i == px.me {
+        px.instances[seq].decided = Decided
+      } else {
+        args := DecideArgs{Seq: seq, Proposal: Proposal{Num: num, Value: maxAccepted.Value}}
+        reply := DecideReply{}
+
+        call(peer, "Paxos.ProcessDecide", &args, &reply)
+      }
+    }
+  }
+}
+
+func (px *Paxos) ProcessDecide(args *DecideArgs, reply *DecideReply) error {
+  px.mu.Lock()
+  defer px.mu.Unlock()
+
+  if _, exist := px.instances[args.Seq]; !exist {
+    px.instances[args.Seq] = &PaxosInstance{
+      decided: Decided,
+      accepted: args.Proposal,
+    }
+  }
+
+  px.instances[args.Seq].decided = Decided
+  px.instances[args.Seq].accepted = args.Proposal
+
+  return nil
+}
+
+func (px *Paxos) ProcessAccept(args *AcceptArgs, reply *AcceptReply) error {
+  px.mu.Lock()
+  defer px.mu.Unlock()
+
+  instance, exist := px.instances[args.Seq]
+
+  if !exist {
+    px.instances[args.Seq] = &PaxosInstance{
+      decided: Pending,
+      maxNum: args.Proposal.Num,
+      accepted: Proposal{Num: "0"},
+    }
+
+    reply.Result = Ok
+  } else if args.Proposal.Num >= instance.maxNum {
+    instance.maxNum = args.Proposal.Num
+    instance.accepted = args.Proposal
+
+    reply.Result = Ok
+  }
+
+  return nil
+}
+
+func (px *Paxos) ProcessPrepare(args *PrepareArgs, reply *PrepareReply) error {
+  px.mu.Lock()
+  defer px.mu.Unlock()
+
+  instance, exist := px.instances[args.Seq]
+
+  if !exist {
+    // make a new instance and return ok
+    px.instances[args.Seq] = &PaxosInstance{
+      decided: Pending,
+      maxNum: args.Num,
+      accepted: Proposal{Num: "0"},
+    }
+
+    log.Info("instance created on", px.peers[px.me], px.instances[args.Seq])
+
+    reply.Result = Ok
+    reply.Accepted = px.instances[args.Seq].accepted
+  } else if args.Num > instance.maxNum {
+    // update max_num of the instance
+    instance.maxNum = args.Num
+
+    log.Info("instance updated on", px.peers[px.me], px.instances[args.Seq])
+
+    // return ok and accepted proposal if there is one
+    reply.Result = Ok
+    reply.Accepted = instance.accepted
+  }
+
+  return nil
 }
 
 //
@@ -122,7 +319,15 @@ func (px *Paxos) Done(seq int) {
 //
 func (px *Paxos) Max() int {
 	// Your code here.
-	return 0
+  max := 0
+
+  for seq, _ := range px.instances {
+    if (seq > max) {
+      max = seq
+    }
+  }
+
+	return max
 }
 
 //
@@ -167,7 +372,11 @@ func (px *Paxos) Min() int {
 //
 func (px *Paxos) Status(seq int) (Fate, interface{}) {
 	// Your code here.
-	return Pending, nil
+  if _, exist := px.instances[seq]; !exist {
+    return Pending, nil
+  }
+
+  return px.instances[seq].decided, px.instances[seq].accepted
 }
 
 
@@ -210,12 +419,17 @@ func (px *Paxos) isunreliable() bool {
 // are in peers[]. this servers port is peers[me].
 //
 func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
+  var formatter = logging.MustStringFormatter(`%{color} %{shortfunc} : %{message} %{color:reset}`)
+
+  logging.SetLevel(logging.INFO, "paxos")
+  logging.SetFormatter(formatter)
+
 	px := &Paxos{}
 	px.peers = peers
 	px.me = me
 
-
 	// Your initialization code here.
+  px.instances = make(map[int]*PaxosInstance)
 
 	if rpcs != nil {
 		// caller will create socket &c
@@ -229,7 +443,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 		os.Remove(peers[me]) // only needed for "unix"
 		l, e := net.Listen("unix", peers[me])
 		if e != nil {
-			log.Fatal("listen error: ", e)
+			log.Debug("listen error: ", e)
 		}
 		px.l = l
 
