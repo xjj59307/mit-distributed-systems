@@ -76,6 +76,8 @@ func (pb *PBServer) FPutAppend(args *PutAppendArgs, reply *PutAppendReply) error
 	pb.mu.Lock()
   defer pb.mu.Unlock()
 
+  // if the backup updates successfully but primary doesn't know
+  // primary will send the request again and again, which will lead to the duplicated elements
   if pb.handled[args.Id] {
     reply.Err = OK
     return nil
