@@ -704,7 +704,7 @@ func TestRepeatedCrash(t *testing.T) {
 		rr := rand.New(rand.NewSource(int64(os.Getpid())))
 		for atomic.LoadInt32(&done) == 0 {
 			i := rr.Int() % nservers
-      log.Println(i, "killed")
+      //log.Println(i, "killed")
 			sa[i].kill()
 
 			// wait long enough for new view to form, backup to be initialized
@@ -734,17 +734,17 @@ func TestRepeatedCrash(t *testing.T) {
 				k := strconv.Itoa((i * 1000000) + (rr.Int() % 10))
 				wanted, ok := data[k]
 				if ok {
-          log.Println("get start", k)
+          //log.Println("get start", k)
 					v := ck.Get(k)
-          log.Println("get over", k)
+          //log.Println("get over", k)
 					if v != wanted {
 						t.Fatalf("key=%v wanted=%v got=%v", k, wanted, v)
 					}
 				}
 				nv := strconv.Itoa(rr.Int())
-        log.Println("put start", k, nv)
+        //log.Println("put start", k, nv)
 				ck.Put(k, nv)
-        log.Println("put end", k, nv)
+        //log.Println("put end", k, nv)
 				data[k] = nv
 				// if no sleep here, then server tick() threads do not get
 				// enough time to Ping the viewserver.
@@ -760,7 +760,7 @@ func TestRepeatedCrash(t *testing.T) {
 	fmt.Printf("  ... Put/Gets done ... \n")
 
 	for i := 0; i < nth; i++ {
-    log.Println(i, "finished")
+    //log.Println(i, "finished")
 		ok := <-cha[i]
 		if ok == false {
 			t.Fatal("child failed")

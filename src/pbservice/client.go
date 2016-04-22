@@ -7,10 +7,8 @@ import "fmt"
 import "crypto/rand"
 import (
 	"math/big"
-	"log"
 	"time"
 )
-
 
 type Clerk struct {
 	vs *viewservice.Clerk
@@ -122,7 +120,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	var reply PutAppendReply
 
 	ck.retry(func() (bool, Err) {
-		log.Println(key, value)
+		logger.Debug(key, value)
 		return call(ck.view.Primary, "PBServer.PutAppend", args, &reply), reply.Err
 	})
 }

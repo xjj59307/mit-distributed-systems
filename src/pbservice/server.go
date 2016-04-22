@@ -3,7 +3,6 @@ package pbservice
 import "net"
 import "fmt"
 import "net/rpc"
-import "log"
 import "time"
 import "viewservice"
 import "sync"
@@ -12,8 +11,10 @@ import "os"
 import "syscall"
 import (
 	"math/rand"
+  "github.com/op/go-logging"
 )
 
+var logger = logging.MustGetLogger("pbservice")
 
 type PBServer struct {
 	mu         sync.Mutex
@@ -22,6 +23,7 @@ type PBServer struct {
 	unreliable int32 // for testing
 	me         string
 	vs         *viewservice.Clerk
+
 	// Your declarations here.
 	view       viewservice.View
 	db         map[string]string
@@ -29,31 +31,28 @@ type PBServer struct {
 	handled    map[int64]bool
 }
 
-
 func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
-
-	// Your code here.
 	pb.mu.Lock()
+  defer pb.mu.Unlock()
 
 	reply.Value = pb.db[args.Key]
 	reply.Err = OK
-
-	pb.mu.Unlock()
 
 	return nil
 }
 
 func (pb *PBServer) Forward(args *PutAppendArgs, reply *PutAppendReply) error {
 	pb.mu.Lock()
+  defer pb.mu.Unlock()
 
-	//log.Println(pb.me, "Start handling forwarded request")
+	logger.Debug(pb.me, "Start handling forwarded request")
 
 	if pb.me != pb.view.Backup || !pb.ready {
-		//log.Println(pb.me, "Forwarding request being sent to a non-backup node")
+		logger.Debug(pb.me, "Forwarding request being sent to a non-backup node")
 
 		reply.Err = ErrWrongServer
 	} else {
-		log.Println(pb.me, "Start updating the database")
+		logger.Debug(pb.me, "Start updating the database")
 
 		if args.Op == "Put" {
 			pb.db[args.Key] = args.Value
@@ -64,49 +63,41 @@ func (pb *PBServer) Forward(args *PutAppendArgs, reply *PutAppendReply) error {
 			pb.handled[args.Id] = true
 			reply.Err = OK
 		} else {
-			log.Fatal("Unknow operation ", args.Op)
+			logger.Error("Unknow operation ", args.Op)
 		}
 	}
-
-	pb.mu.Unlock()
 
 	return nil
 }
 
 func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
-
-	// Your code here.
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 
 	if pb.handled[args.Id] {
-		//log.Println(pb.me, "Request already been handled")
-		//delete(pb.handled, args.Id)
+		logger.Debug(pb.me, "Request already been handled")
 		reply.Err = OK
 		return nil
 	}
 
 	if pb.me != pb.view.Primary {
-		//log.Println(pb.me, "PutAppend being sent to a non-primary node")
-
+		logger.Debug(pb.me, "PutAppend being sent to a non-primary node")
 		reply.Err = ErrWrongServer
-
 		return nil
 	}
 
 	// Primary will only make changes after backup being updated
 	if pb.view.Backup != "" {
-		//log.Println(pb.me, "Start forwarding PutAppend to the backup node", pb.view.Backup)
+		logger.Debug(pb.me, "Start forwarding PutAppend to the backup node", pb.view.Backup)
 
     ok := call(pb.view.Backup, "PBServer.Forward", args, reply)
 		if !ok || reply.Err != OK {
-			log.Println(pb.me, "Failed in forwarding the request", pb.view.Backup)
-
+			logger.Debug(pb.me, "Failed in forwarding the request", pb.view.Backup)
 			return nil
 		}
 	}
 
-	//log.Println(pb.me, "Start updating the database")
+	logger.Debug(pb.me, "Start updating the database")
 	if args.Op == "Put" {
 		pb.db[args.Key] = args.Value
 		pb.handled[args.Id] = true
@@ -116,7 +107,7 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 		pb.handled[args.Id] = true
 		reply.Err = OK
 	} else {
-		log.Fatal("Unknow operation ", args.Op)
+		logger.Error("Unknow operation ", args.Op)
 	}
 
 	return nil
@@ -124,31 +115,28 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 
 func (pb *PBServer) MigrateDB(args bool, reply *map[string]string) error {
 	pb.mu.Lock()
+  defer pb.mu.Unlock()
 
-	//log.Println(pb.me, "Start handling migration request")
+	logger.Debug(pb.me, "Start handling migration request")
 	*reply = pb.db
 
 	// Update the view
 	view, err := pb.vs.Ping(pb.view.Viewnum)
 	if err != nil {
-		log.Fatal(err)
+		logger.Error(err)
 	}
 
 	pb.view = view
-
-	pb.mu.Unlock()
 
 	return nil
 }
 
 func (pb *PBServer) MigrateHandled(args bool, reply *map[int64]bool) error {
-	log.Println("Start migrating handled")
 	pb.mu.Lock()
+  defer pb.mu.Unlock()
 
-	log.Println(pb.me, "Start handling migration request")
+	logger.Debug(pb.me, "Start handling migration request")
 	*reply = pb.handled
-
-	pb.mu.Unlock()
 
 	return nil
 }
@@ -171,9 +159,8 @@ func retry(fn func() bool) {
 //   manage transfer of state from primary to new backup.
 //
 func (pb *PBServer) tick() {
-
-	// Your code here.
 	pb.mu.Lock()
+  defer pb.mu.Unlock()
 
 	var viewnum uint
 	if pb.me == pb.view.Primary || pb.me == pb.view.Backup {
@@ -183,14 +170,14 @@ func (pb *PBServer) tick() {
 	}
 	view, err := pb.vs.Ping(viewnum)
 	if err != nil {
-		log.Fatal(err)
+		logger.Error(err)
 	}
 
-	//log.Println(pb.me, "tick", view.Primary, view.Backup)
+	logger.Debug(pb.me, "tick", view.Primary, view.Backup)
 
 	// pb who isn't the backup in last view has become the backup in current view
 	if pb.me != pb.view.Backup && pb.me == view.Backup {
-		log.Println(pb.me, "Start migration", view.Primary, view.Backup, pb.me)
+		logger.Debug(pb.me, "Start migration", view.Primary, view.Backup, pb.me)
 		retry(func () bool {
 			return call(view.Primary, "PBServer.MigrateDB", true, &pb.db)
 		})
@@ -199,12 +186,10 @@ func (pb *PBServer) tick() {
 		})
     pb.ready = true
 
-		log.Println(pb.me, "Migration finished", pb.db, pb.handled)
+		logger.Debug(pb.me, "Migration finished", pb.db, pb.handled)
 	}
 
 	pb.view = view
-
-	pb.mu.Unlock()
 }
 
 // tell the server to shut itself down.
@@ -232,8 +217,12 @@ func (pb *PBServer) isunreliable() bool {
 	return atomic.LoadInt32(&pb.unreliable) != 0
 }
 
-
 func StartServer(vshost string, me string) *PBServer {
+	var formatter = logging.MustStringFormatter(`%{color} %{shortfunc} : %{message} %{color:reset}`)
+
+	logging.SetLevel(logging.CRITICAL, "pbservice")
+	logging.SetFormatter(formatter)
+
 	pb := new(PBServer)
 	pb.me = me
 	pb.vs = viewservice.MakeClerk(me, vshost)
@@ -248,7 +237,7 @@ func StartServer(vshost string, me string) *PBServer {
 	os.Remove(pb.me)
 	l, e := net.Listen("unix", pb.me)
 	if e != nil {
-		log.Fatal("listen error: ", e)
+		logger.Error("listen error: ", e)
 	}
 	pb.l = l
 
