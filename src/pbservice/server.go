@@ -41,13 +41,38 @@ func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 	pb.mu.Lock()
   defer pb.mu.Unlock()
 
-	reply.Value = pb.db[args.Key]
-	reply.Err = OK
+  if pb.me != pb.view.Primary {
+    reply.Err = ErrWrongServer
+    return nil
+  }
+
+  if pb.view.Backup != "" {
+    ok := call(pb.view.Backup, "PBServer.FGet", args, reply)
+    if !ok || reply.Err != OK {
+      return nil
+    }
+  }
+
+  reply.Value = pb.db[args.Key]
+  reply.Err = OK
 
 	return nil
 }
 
-func (pb *PBServer) Forward(args *PutAppendArgs, reply *PutAppendReply) error {
+func (pb *PBServer) FGet(args *GetArgs, reply *GetReply) error {
+  pb.mu.Lock()
+  defer pb.mu.Unlock()
+
+  if pb.me != pb.view.Backup {
+    reply.Err = ErrWrongServer
+  } else {
+    reply.Err = OK
+  }
+
+  return nil
+}
+
+func (pb *PBServer) FPutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 	pb.mu.Lock()
   defer pb.mu.Unlock()
 
@@ -86,7 +111,7 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 
 	// Primary will only make changes after backup being updated
 	if pb.view.Backup != "" {
-    ok := call(pb.view.Backup, "PBServer.Forward", args, reply)
+    ok := call(pb.view.Backup, "PBServer.FPutAppend", args, reply)
 		if !ok || reply.Err != OK {
 			return nil
 		}
