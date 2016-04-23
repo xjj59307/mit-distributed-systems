@@ -1,10 +1,10 @@
-# Lab 1: MapReduce
+### Lab 1: MapReduce
 - mapreduce
 
-# Lab 2: Primary/Backup Key/Value Service
+### Lab 2: Primary/Backup Key/Value Service
 - viewservice
 - pbservice
 
-# Lab 3: Paxos-based Key/Value Service
+### Lab 3: Paxos-based Key/Value Service
 - paxos
 - kvpaxos
